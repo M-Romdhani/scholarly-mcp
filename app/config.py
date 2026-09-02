@@ -35,6 +35,20 @@ MCP_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "").strip()
 PUBLIC_HOSTNAME = (os.environ.get("PUBLIC_HOSTNAME", "").strip()
                    or os.environ.get("RAILWAY_PUBLIC_DOMAIN", "").strip())
 
+# Origins the MCP transport accepts. A client that sends an Origin header not on
+# this list is answered 403, so the hosts that legitimately connect must be here.
+# Claude's connector is the intended client; without these it fails with an
+# opaque 403 that looks like an auth problem rather than a CORS one.
+DEFAULT_CLIENT_ORIGINS = (
+    "https://claude.ai",
+    "https://www.claude.ai",
+    "https://api.anthropic.com",
+    "https://console.anthropic.com",
+)
+EXTRA_ORIGINS = tuple(
+    o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "").split(",") if o.strip()
+)
+
 PORT = int(os.environ.get("PORT", "8000"))
 HOST = os.environ.get("HOST", "0.0.0.0")
 
@@ -96,6 +110,21 @@ def allowed_http_hosts() -> list[str]:
     return hosts
 
 
+def allowed_origins() -> list[str]:
+    """Origin header values the MCP transport will accept.
+
+    Bearer auth is the real access control here; Origin validation only stops a
+    browser page from replaying a request. Rejecting the client we exist to serve
+    is the worse failure, so the known Claude origins are allowed by default and
+    ALLOWED_ORIGINS extends the list for other clients.
+    """
+    origins = list(DEFAULT_CLIENT_ORIGINS) + list(EXTRA_ORIGINS)
+    if PUBLIC_HOSTNAME:
+        origins += [f"https://{PUBLIC_HOSTNAME}", f"http://{PUBLIC_HOSTNAME}"]
+    origins += ["http://localhost:*", "http://127.0.0.1:*"]
+    return origins
+
+
 def startup_report() -> dict:
     return {
         "contact_email_set": bool(CONTACT_EMAIL and "@" in CONTACT_EMAIL),
@@ -105,6 +134,7 @@ def startup_report() -> dict:
         "auth_required": bool(MCP_AUTH_TOKEN),
         "public_hostname": PUBLIC_HOSTNAME or None,
         "mcp_allowed_host_headers": allowed_http_hosts() if PUBLIC_HOSTNAME else None,
+        "mcp_allowed_origins": allowed_origins() if PUBLIC_HOSTNAME else None,
         "dns_rebinding_protection": bool(PUBLIC_HOSTNAME),
         "allowed_hosts": sorted(ALLOWED_HOSTS),
         "cache_path": CACHE_PATH,

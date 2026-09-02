@@ -323,6 +323,28 @@ class TestHostHeaderValidation(unittest.TestCase):
             config.PUBLIC_HOSTNAME = orig
 
 
+class TestOriginValidation(unittest.TestCase):
+    """The MCP transport answers 403 to any Origin not on the allow list. Left at
+    just the server's own hostname, Claude's connector — the client this exists to
+    serve — was rejected with an opaque 403 that reads like an auth failure."""
+
+    def test_claude_origins_allowed(self):
+        from app import config
+        orig = config.PUBLIC_HOSTNAME
+        try:
+            config.PUBLIC_HOSTNAME = "scholarly-mcp-production.up.railway.app"
+            origins = config.allowed_origins()
+            for o in ("https://claude.ai", "https://api.anthropic.com"):
+                self.assertIn(o, origins, f"{o} would be refused 403")
+            self.assertIn("https://scholarly-mcp-production.up.railway.app", origins)
+        finally:
+            config.PUBLIC_HOSTNAME = orig
+
+    def test_arbitrary_origin_not_allowed(self):
+        from app import config
+        self.assertNotIn("https://attacker.example.com", config.allowed_origins())
+
+
 class TestBudgetHeaderCapture(unittest.TestCase):
     """Real header names, confirmed live 2026-09-02. The old substring list
     dropped X-RateLimit-Limit-USD and X-RateLimit-Reset, leaving budget_status

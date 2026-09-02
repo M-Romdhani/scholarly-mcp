@@ -109,8 +109,7 @@ def build_app():
         transport_security = TransportSecuritySettings(
             enable_dns_rebinding_protection=True,
             allowed_hosts=config.allowed_http_hosts(),
-            allowed_origins=[f"https://{config.PUBLIC_HOSTNAME}",
-                             f"http://{config.PUBLIC_HOSTNAME}"],
+            allowed_origins=config.allowed_origins(),
         )
         log.info("Host-header validation ON; accepting %s",
                  config.allowed_http_hosts())
