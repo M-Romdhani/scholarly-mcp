@@ -101,19 +101,28 @@ UNRANKED = 10_000
 
 
 def relevance_key(rec: dict):
-    """Sort key for merged search results.
+    """Sort key for merged search results: relevance, then corroboration, then
+    citations.
 
-    Corroboration first — that is the signal the federation exists to produce.
-    Then each index's own relevance rank, which is the part that used to be
-    thrown away: sorting on citation count alone buried a directly on-topic
-    meta-analysis beneath loosely-related papers with more citations, purely
-    because the older papers had had longer to accumulate them. Citations break
-    remaining ties.
+    Two orderings were tried against live results and both failed before this
+    one. Sorting on citation count put a global burden-of-disease study and four
+    sets of clinical guidelines (12,028 down to 4,928 citations) above the
+    pivotal randomised trial, because citation count measures age and prominence
+    rather than fit to the question.
+
+    Sorting on corroboration first failed differently. Independent indexes agree
+    readily on broad topical matches, so on a cardiovascular query the
+    corroborated papers were about breast cancer and type 2 diabetes, and they
+    pushed the pivotal trial to rank 5. Corroboration is evidence that a paper is
+    real and findable — which is what identity.md claims for it — not evidence
+    that it answers the question asked. It belongs as a tiebreak among papers of
+    comparable relevance, and it is still reported per record and counted in
+    multi_index_count, so nothing downstream loses the signal.
     """
     rank = rec.get("source_rank")
     return (
-        -rec.get("corroboration", 0),
         rank if isinstance(rank, int) else UNRANKED,
+        -rec.get("corroboration", 0),
         -(rec.get("cited_by_count") or 0),
     )
 

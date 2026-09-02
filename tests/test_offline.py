@@ -342,11 +342,21 @@ class TestRelevanceRanking(unittest.TestCase):
         ordered = sorted([off_topic, on_topic], key=merge.relevance_key)
         self.assertEqual(ordered[0]["doi"], "10.1/trial")
 
-    def test_corroboration_still_outranks_relevance(self):
-        corroborated = self._rec("openalex", "10.1/two", 9, 10, corr=2)
-        single = self._rec("openalex", "10.1/one", 0, 10, corr=1)
+    def test_corroboration_breaks_ties_at_equal_relevance(self):
+        corroborated = self._rec("openalex", "10.1/two", 3, 10, corr=2)
+        single = self._rec("openalex", "10.1/one", 3, 10, corr=1)
         ordered = sorted([single, corroborated], key=merge.relevance_key)
         self.assertEqual(ordered[0]["doi"], "10.1/two")
+
+    def test_corroboration_does_not_outrank_relevance(self):
+        """Indexes agree readily on broad topical matches, so a corroborated but
+        off-topic paper must not displace the on-topic one. On a cardiovascular
+        query this ordering had put breast cancer and diabetes papers above the
+        pivotal trial."""
+        off_topic_corroborated = self._rec("openalex", "10.1/breastcancer", 1, 43, corr=2)
+        on_topic = self._rec("openalex", "10.1/predimed", 0, 3599, corr=1)
+        ordered = sorted([off_topic_corroborated, on_topic], key=merge.relevance_key)
+        self.assertEqual(ordered[0]["doi"], "10.1/predimed")
 
     def test_unranked_sorts_behind_ranked(self):
         ranked = self._rec("openalex", "10.1/ranked", 40, 0, corr=1)
