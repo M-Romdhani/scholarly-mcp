@@ -1,0 +1,124 @@
+# scholarly-mcp
+
+MCP server giving Claude verified access to scholarly literature APIs: OpenAlex, Crossref, Semantic Scholar, arXiv, Unpaywall, DataCite.
+
+**Read `identity.md` first.** It explains the problem this solves and the rules the code must keep. Several design choices look like unnecessary restrictions without that context.
+
+---
+
+## Status
+
+Written and tested on 2026-09-02 against `mcp` SDK **2.1.1**. Note the SDK is at 2.x, where `FastMCP` was renamed to `MCPServer` — v1 examples found online will not work.
+
+**Verified against live APIs on 2026-09-02.** All five adapters were run against real responses from OpenAlex, Crossref, Semantic Scholar, arXiv, Unpaywall and DataCite, and all five tools were exercised over the HTTP transport. 41/41 offline tests pass.
+
+The parsers were correct as written — including `primary_location.source.display_name`, the `select` field lists, and the S2 `citedPaper`/`citingPaper` nesting. Four real defects were found and fixed; each has a regression test:
+
+| Was | Now |
+|---|---|
+| `/mcp` answered **421** behind any real domain while `/health` returned 200 — a green deploy in front of a dead server | Host validation configured from `PUBLIC_HOSTNAME`; `/health` reports whether *this* request's Host would be accepted |
+| Retracted papers classified as **clean** — the code read `update-to`, which lives on the retraction *notice*, not `updated-by`, which lives on the paper | Both fields read, severity ranked by precedence; verified against Wakefield 1998 and Mehra NEJM 2020 |
+| `10.1234/../../v2/x` passed DOI validation and built a traversing URL | Relative and empty path segments rejected |
+| One SQLite connection shared across the SDK's worker threads | Guarded by a lock |
+| `budget_status` reported an amount remaining with no denominator | Full `x-ratelimit-*` family captured and parsed |
+
+**Still not verified:** behaviour under sustained real load, and OpenAlex spend against a paid key (all live testing was on the keyless $0.10/day tier).
+
+---
+
+## Local run
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env          # fill in CONTACT_EMAIL at minimum
+set -a && source .env && set +a
+python -m app.main            # → http://127.0.0.1:8000/mcp
+python -m tests.test_offline  # 41 tests, no network needed
+```
+
+Smoke test:
+
+```bash
+curl -s localhost:8000/health | python -m json.tool
+
+curl -s -X POST localhost:8000/mcp \
+  -H "Authorization: Bearer $MCP_AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+```
+
+---
+
+## Railway deploy
+
+1. Push this directory to a GitHub repo (`.gitignore` already excludes `.env`).
+2. Railway → **New Project → Deploy from GitHub repo**. Nixpacks detects Python from `requirements.txt`; `railway.json` supplies the start command and healthcheck.
+3. **Variables** — set these in the Railway dashboard, not in the repo:
+
+   | Variable | Required | Notes |
+   |---|---|---|
+   | `CONTACT_EMAIL` | **yes** | Server refuses to start without it. Crossref's polite pool depends on it. |
+   | `OPENALEX_API_KEY` | strongly recommended | Free, 30s at `openalex.org/settings/api`. Without it: $0.10/day instead of $1.00/day. |
+   | `MCP_AUTH_TOKEN` | strongly recommended | Otherwise the public URL is open and anyone can spend your budget. Generate: `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
+   | `PUBLIC_HOSTNAME` | only for custom domains | Railway sets `RAILWAY_PUBLIC_DOMAIN` automatically and the server falls back to it. Set this to the hostname **the client connects to** when you put a custom domain or CDN in front — otherwise `/mcp` answers 421. |
+   | `S2_API_KEY` | recommended if you use it | Semantic Scholar 429s quickly without one. It is no longer a default source for `search_literature` for that reason; add it explicitly once you have a key. |
+
+   Do **not** set `PORT` — Railway injects it.
+4. **Settings → Networking → Generate Domain.**
+5. Confirm: `curl https://<domain>/health` should return `{"status":"ok", ...}` with `auth_required: true`, `mcp_would_accept_this_host: true`, and an **empty `warnings` array**. A non-empty `warnings` array is the server telling you something is misconfigured while still returning 200 — read it. In particular, `mcp_would_accept_this_host: false` means `/mcp` will answer 421 even though this check passed.
+6. Add to Claude as a custom connector: URL `https://<domain>/mcp`, with the bearer token.
+
+The SQLite cache lives on ephemeral disk and is wiped on redeploy. That is fine — it is a cache, and losing it costs a few free DOI lookups. Attach a volume at `CACHE_PATH` only if you want it to survive.
+
+---
+
+## Review status
+
+Everything in the original review checklist has now been run against live APIs. Results:
+
+**1. Response parsing — done, parsers were correct.** All six adapters checked against real responses. `_oa_record` (including `primary_location.source.display_name` and the `select` list), `_cr_record`, S2's `citedPaper`/`citingPaper` nesting, arXiv Atom, Unpaywall and DataCite all parse live data correctly.
+
+**2. OpenAlex budget headers — done, names confirmed.** The live set is `X-RateLimit-Limit`, `X-RateLimit-Limit-USD`, `X-RateLimit-Remaining`, `X-RateLimit-Remaining-USD`, `X-RateLimit-Cost-USD`, `X-RateLimit-Credits-Used`, `X-RateLimit-Reset`, `X-RateLimit-Onetime-Remaining`, `X-RateLimit-Prepaid-Remaining-USD`. The capture now takes the whole `x-ratelimit-*` family rather than a substring list, which had been dropping the limit and the reset time. (`X-RateLimit-Limit-USD: 0.1` on a keyless request independently confirms the documented cost model.)
+
+**3. Auth middleware ordering — confirmed correct**, and Host validation was found broken alongside it. `/mcp` returns 401 without a token and 421 for an unrecognised Host; `/health` stays open for platform probes.
+
+**4. `stateless_http=True` — kept.** Works over the real transport.
+
+**5. Rate-limit behaviour — partly addressed.** Semantic Scholar 429s on the first unauthenticated call, so it is no longer a `search_literature` default. Backoff is now bounded by `FETCH_DEADLINE` (45s) so a rate-limited source fails reportably instead of outlasting the client's tool timeout. Sustained-load behaviour is still untested.
+
+**Retraction classification — was wrong, now fixed and the most important change here.** Crossref puts `update-to` on the retraction *notice* and `updated-by` on the retracted *paper*. Reading only `update-to` meant every retracted paper classified as clean; `verify_doi` then emitted `disputed_flag` with the note "Crossref shows no retraction record" — false — and no guidance line at all. Confirmed against Wakefield 1998 and Mehra NEJM 2020, both of which now return `retracted` with the correct guidance.
+
+## Security invariants — do not relax these
+
+Encoded in `tests/test_offline.py`. If a test there starts failing, the server has become the passthrough that `identity.md` rejects.
+
+- **Exact-hostname allowlist**, `in frozenset` — never `endswith()`. `api.crossref.org.attacker.com` must fail.
+- **No tool accepts a URL, host, endpoint, or headers.** There is a test asserting this against the generated tool schemas.
+- **Redirects re-validated per hop** — `_NoRedirect` forces manual handling so urllib cannot follow one off the allowlist.
+- **DNS resolution checked against private/reserved ranges** before connecting.
+- **DOIs validated against an anchored regex** that excludes `?`, `#`, `&`, backslash and whitespace, so a DOI cannot inject query parameters into a constructed URL — **and** relative/empty path segments are rejected separately. The regex alone is not sufficient: a DOI suffix may legally contain `/`, and `build_url` leaves `/` unescaped, so `10.1234/../../v2/x` used to validate and build a URL that walked to a different endpoint on an allowlisted host.
+- **Host header validated** against `PUBLIC_HOSTNAME` by the MCP transport, and `/health` reports whether the incoming Host would be accepted rather than reporting `ok` for a server whose `/mcp` is answering 421.
+- **Response size capped** at 8 MB. One Crossref record with a full reference list ran to hundreds of entries.
+
+If you add a source, add its host to `ALLOWED_HOSTS`, add an adapter that builds URLs via `build_url`, and add a test. Never add a way to pass a URL in.
+
+---
+
+## Known gaps
+
+- **Europe PMC is allowlisted but has no adapter.** `www.ebi.ac.uk` is in `ALLOWED_HOSTS` ready for one. Worth adding for biomedical work — it serves open-access full text directly, which is the difference between `fulltext` and `abstract-only` in the ledger.
+- **No `search_by_field` tool** (author, year range, venue). OpenAlex list+filter is cheap ($0.10/1000) and this would be a natural sixth tool.
+- **Cache is not shared across instances.** Fine at one user; would need Redis if that changes. The in-process connection is lock-guarded, which is correct for one process but does not coordinate between replicas — keep this service at one instance.
+- **No structured logging or metrics.** Add if it moves beyond personal use.
+- **`resolve_fulltext` reports availability, not readership.** By design — see `identity.md` rule 5. Do not "improve" it into auto-setting the ledger's `access` field.
+
+---
+
+## Related
+
+- `scholarly-source-gathering` skill — the discovery and verification method
+- `scientific-research-publisher` skill — verified sources → typeset PDF
+
+Once this server is live, `references/access_routes.md` in the gathering skill can be trimmed: route B and the `web_fetch` substitution trap stop applying when the MCP is connected.

@@ -1,0 +1,8 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+*.sqlite
+
+# Reference skills kept locally for context; not part of this server.
+*.skill
