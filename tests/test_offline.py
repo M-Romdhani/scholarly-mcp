@@ -323,6 +323,80 @@ class TestHostHeaderValidation(unittest.TestCase):
             config.PUBLIC_HOSTNAME = orig
 
 
+class TestRelevanceRanking(unittest.TestCase):
+    """Sorting merged results on citation count alone surfaced clinical
+    guidelines and burden-of-disease reviews (8,000+ citations) above the
+    pivotal randomised trial the query was actually about. Each index's own
+    relevance rank has to survive the merge."""
+
+    def _rec(self, src, doi, rank, cites, corr=None):
+        r = {"doi": doi, "title": doi, "year": 2020, "found_by": [src],
+             "source_rank": rank, "cited_by_count": cites}
+        if corr is not None:
+            r["corroboration"] = corr
+        return r
+
+    def test_relevance_beats_raw_citation_count(self):
+        on_topic = self._rec("openalex", "10.1/trial", 0, 200, corr=1)
+        off_topic = self._rec("openalex", "10.1/guideline", 20, 9000, corr=1)
+        ordered = sorted([off_topic, on_topic], key=merge.relevance_key)
+        self.assertEqual(ordered[0]["doi"], "10.1/trial")
+
+    def test_corroboration_still_outranks_relevance(self):
+        corroborated = self._rec("openalex", "10.1/two", 9, 10, corr=2)
+        single = self._rec("openalex", "10.1/one", 0, 10, corr=1)
+        ordered = sorted([single, corroborated], key=merge.relevance_key)
+        self.assertEqual(ordered[0]["doi"], "10.1/two")
+
+    def test_unranked_sorts_behind_ranked(self):
+        ranked = self._rec("openalex", "10.1/ranked", 40, 0, corr=1)
+        unranked = self._rec("openalex", "10.1/unranked", None, 999, corr=1)
+        unranked.pop("source_rank")
+        ordered = sorted([unranked, ranked], key=merge.relevance_key)
+        self.assertEqual(ordered[0]["doi"], "10.1/ranked")
+
+    def test_merge_keeps_best_rank_across_indexes(self):
+        m = merge.merge([
+            {"doi": "10.1/x", "title": "T", "year": 2020, "found_by": ["openalex"],
+             "source_rank": 18, "cited_by_count": 5},
+            {"doi": "10.1/x", "title": "T", "year": 2020, "found_by": ["crossref"],
+             "source_rank": 2, "cited_by_count": 5},
+        ])
+        self.assertEqual(len(m), 1)
+        self.assertEqual(m[0]["source_rank"], 2,
+                         "merge must keep the best rank any index gave it")
+
+
+class TestRequestPacing(unittest.TestCase):
+    """Semantic Scholar issues keys limited to 1 request/second cumulative
+    across all endpoints, so search and citation calls share one budget."""
+
+    def test_semanticscholar_is_paced(self):
+        from app import http as apphttp
+        self.assertIn("api.semanticscholar.org", apphttp.MIN_INTERVAL)
+        self.assertGreaterEqual(apphttp.MIN_INTERVAL["api.semanticscholar.org"], 1.0)
+
+    def test_arxiv_still_paced(self):
+        from app import http as apphttp
+        self.assertGreaterEqual(apphttp.MIN_INTERVAL["export.arxiv.org"], 3.0)
+
+    def test_pacing_actually_delays(self):
+        import time
+        from app import http as apphttp
+        apphttp._last_call.pop("api.semanticscholar.org", None)
+        apphttp._pace("api.semanticscholar.org")
+        start = time.monotonic()
+        apphttp._pace("api.semanticscholar.org")
+        self.assertGreaterEqual(time.monotonic() - start, 1.0)
+
+    def test_unpaced_host_is_not_delayed(self):
+        import time
+        from app import http as apphttp
+        start = time.monotonic()
+        apphttp._pace("api.crossref.org")
+        self.assertLess(time.monotonic() - start, 0.5)
+
+
 class TestOriginValidation(unittest.TestCase):
     """The MCP transport answers 403 to any Origin not on the allow list. Left at
     just the server's own hostname, Claude's connector — the client this exists to

@@ -54,6 +54,13 @@ def merge(records: list[dict]) -> list[dict]:
         for k, v in src.items():
             if k == "found_by":
                 continue
+            # An index's own relevance rank is evidence, and the best rank any
+            # index gave a paper is the one worth keeping — "fill only if empty"
+            # would keep whichever copy happened to be seen first.
+            if k == "source_rank" and isinstance(v, int):
+                cur = dst.get("source_rank")
+                dst[k] = v if not isinstance(cur, int) else min(cur, v)
+                continue
             if dst.get(k) in (None, "", []) and v not in (None, "", []):
                 dst[k] = v
 
@@ -86,6 +93,29 @@ def merge(records: list[dict]) -> list[dict]:
     for rec in out:
         rec["corroboration"] = independent_count(rec["found_by"])
     return out
+
+
+# Papers an index did not return at all sort behind every ranked paper rather
+# than ahead of them, which sorting on a missing value as 0 would do.
+UNRANKED = 10_000
+
+
+def relevance_key(rec: dict):
+    """Sort key for merged search results.
+
+    Corroboration first — that is the signal the federation exists to produce.
+    Then each index's own relevance rank, which is the part that used to be
+    thrown away: sorting on citation count alone buried a directly on-topic
+    meta-analysis beneath loosely-related papers with more citations, purely
+    because the older papers had had longer to accumulate them. Citations break
+    remaining ties.
+    """
+    rank = rec.get("source_rank")
+    return (
+        -rec.get("corroboration", 0),
+        rank if isinstance(rank, int) else UNRANKED,
+        -(rec.get("cited_by_count") or 0),
+    )
 
 
 # ------------------------------------------------------------------ cache

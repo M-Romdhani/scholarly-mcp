@@ -7,6 +7,7 @@ including after a redirect.
 import ipaddress
 import json
 import socket
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -19,8 +20,36 @@ from . import config
 _last_openalex_budget: dict[str, str] = {}
 _last_openalex_seen_at: float | None = None
 
-# arXiv asks for roughly one request every 3 seconds.
-_last_arxiv_call: float = 0.0
+# Per-host minimum spacing between requests, seconds.
+#   arXiv asks for roughly one request every 3 seconds.
+#   Semantic Scholar issues keys with a documented limit of 1 request per second
+#   CUMULATIVE ACROSS ALL ENDPOINTS, so search and citation calls share one
+#   budget. Exceeding it gets requests rejected, and the retry path then costs
+#   more time than pacing would have. 1.1s leaves margin for clock skew.
+MIN_INTERVAL = {
+    "export.arxiv.org": 3.0,
+    "api.semanticscholar.org": 1.1,
+}
+_last_call: dict[str, float] = {}
+_pace_lock = threading.Lock()
+
+
+def _pace(host: str) -> None:
+    """Block until this host may be called again.
+
+    The sleep happens while holding the lock: these limits are per-host across
+    the whole process, so two worker threads must not each decide they are
+    clear to go. Tool functions run in a thread pool, which is exactly when that
+    would happen.
+    """
+    interval = MIN_INTERVAL.get(host)
+    if not interval:
+        return
+    with _pace_lock:
+        gap = time.monotonic() - _last_call.get(host, 0.0)
+        if gap < interval:
+            time.sleep(interval - gap)
+        _last_call[host] = time.monotonic()
 
 
 class FetchError(RuntimeError):
@@ -141,12 +170,7 @@ def fetch(url: str, *, accept: str = "application/json",
     for hop in range(config.MAX_REDIRECTS + 1):
         host = urllib.parse.urlsplit(current).hostname or ""
 
-        if host == "export.arxiv.org":
-            global _last_arxiv_call
-            gap = time.time() - _last_arxiv_call
-            if gap < 3.0:
-                time.sleep(3.0 - gap)
-            _last_arxiv_call = time.time()
+        _pace(host)
 
         for attempt in range(retries):
             try:

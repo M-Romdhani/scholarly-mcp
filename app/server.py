@@ -90,14 +90,18 @@ def search_literature(
                 lambda fn=fn: fn(query, limit),
                 ttl=3600,
             )
+            # Tag each record with the position its own index gave it, so the
+            # merge can preserve relevance instead of re-ranking purely on
+            # citation count.
+            for position, rec in enumerate(found):
+                rec.setdefault("source_rank", position)
             all_recs.extend(found)
         except Exception as e:
             failed[name] = _fail(e)
             log.warning("search %s failed: %s", name, e)
 
     merged = merge.merge(all_recs)
-    merged.sort(key=lambda r: (-r.get("corroboration", 0),
-                               -(r.get("cited_by_count") or 0)))
+    merged.sort(key=merge.relevance_key)
 
     result = {
         "query": query,
