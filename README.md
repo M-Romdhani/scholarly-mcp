@@ -63,7 +63,7 @@ curl -s -X POST localhost:8000/mcp \
    | `OPENALEX_API_KEY` | strongly recommended | Free, 30s at `openalex.org/settings/api`. Without it: $0.10/day instead of $1.00/day. |
    | `MCP_AUTH_TOKEN` | strongly recommended | Otherwise the public URL is open and anyone can spend your budget. Generate: `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
    | `PUBLIC_HOSTNAME` | only for custom domains | Railway sets `RAILWAY_PUBLIC_DOMAIN` automatically and the server falls back to it. Set this to the hostname **the client connects to** when you put a custom domain or CDN in front — otherwise `/mcp` answers 421. |
-   | `S2_API_KEY` | recommended if you use it | Semantic Scholar 429s quickly without one. It is no longer a default source for `search_literature` for that reason; add it explicitly once you have a key. |
+   | `S2_API_KEY` | **yes, if you want corroboration to mean anything** | Semantic Scholar 429s quickly without one. It is a default source for `search_literature`, and it is the only index in the set that is independent of Crossref deposit data — so without the key, corroboration counts are weaker than they look. Requested at `semanticscholar.org/product/api`; approval is manual and not instant. |
 
    Do **not** set `PORT` — Railway injects it.
 4. **Settings → Networking → Generate Domain.**

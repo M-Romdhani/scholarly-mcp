@@ -65,13 +65,14 @@ def search_literature(
                      "europepmc", "inspire"]],
         Field(description="Which indexes to query. Use at least two independent "
                           "ones; a single index's ranking becomes your view of "
-                          "the field. 'semanticscholar' rate-limits hard without "
-                          "a key — add it when S2_API_KEY is configured. Route "
+                          "the field. These three defaults are independent of "
+                          "each other, which is what makes the corroboration "
+                          "count meaningful. Route "
                           "by domain: 'europepmc' for biomedical and life "
                           "sciences (it also carries MEDLINE curation), "
                           "'inspire' for high-energy physics and astrophysics, "
                           "'arxiv' for preprints generally.")
-    ] = ["openalex", "crossref"],
+    ] = ["openalex", "crossref", "semanticscholar"],
     limit: Annotated[int, Field(ge=1, le=100,
                                 description="Max results per index.")] = 25,
 ) -> dict[str, Any]:
