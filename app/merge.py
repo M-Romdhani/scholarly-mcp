@@ -19,8 +19,20 @@ INDEPENDENCE_GROUPS = {
     "openalex": "openalex",
     "unpaywall": "openalex",
     "crossref": "crossref",
+    # OpenCitations' index is built largely from the open reference lists that
+    # publishers deposit AT Crossref. An OpenCitations edge agreeing with
+    # Crossref is the same deposit counted twice, so it must not raise the
+    # corroboration count on its own.
+    "opencitations": "crossref",
     "semanticscholar": "semanticscholar",
     "arxiv": "arxiv",
+    # Europe PMC's metadata comes from MEDLINE/PubMed curation rather than from
+    # Crossref deposits, so it is genuinely independent evidence.
+    "europepmc": "europepmc",
+    # INSPIRE runs its own editorial curation and citation extraction. Its
+    # preprint layer does overlap arXiv heavily, so treat agreement between
+    # those two as weaker than the count suggests.
+    "inspire": "inspire",
 }
 
 

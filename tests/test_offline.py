@@ -189,14 +189,14 @@ class TestNormalization(unittest.TestCase):
 
 
 class TestToolsRegistered(unittest.TestCase):
-    def test_five_tools_present(self):
+    def test_tools_present(self):
         from app.server import mcp
         import asyncio
         tools = asyncio.run(mcp.list_tools())
         names = {t.name for t in tools}
         self.assertEqual(names, {"search_literature", "verify_doi",
                                  "expand_citations", "resolve_fulltext",
-                                 "budget_status"})
+                                 "fetch_fulltext", "budget_status"})
 
     def test_no_generic_url_tool(self):
         """identity.md rule 1: no tool may accept a caller-supplied URL."""
@@ -396,6 +396,119 @@ class TestDisputedFlagGuidance(unittest.TestCase):
         for status in ("disputed_flag", "retracted", "concern", "corrected"):
             self.assertIn(f'"{status}"', src,
                           f"{status} has no branch in verify_doi")
+
+
+class TestNewSourceHosts(unittest.TestCase):
+    def test_new_hosts_allowlisted(self):
+        for host in ("www.ebi.ac.uk", "inspirehep.net", "api.opencitations.net"):
+            assert_allowed(f"https://{host}/x")
+
+    def test_lookalikes_still_refused(self):
+        for evil in ("https://inspirehep.net.attacker.com/x",
+                     "https://api.opencitations.net.evil.io/x",
+                     "https://evil.com/inspirehep.net"):
+            with self.assertRaises(SecurityError, msg=f"allowed {evil}"):
+                assert_allowed(evil)
+
+
+class TestOpenCitationsIndependence(unittest.TestCase):
+    """OpenCitations' index is built largely from reference lists deposited at
+    Crossref, so agreement between the two is one deposit counted twice."""
+
+    def test_opencitations_not_independent_of_crossref(self):
+        self.assertEqual(merge.independent_count(["crossref", "opencitations"]), 1)
+
+    def test_europepmc_is_independent(self):
+        self.assertEqual(merge.independent_count(["crossref", "europepmc"]), 2)
+        self.assertEqual(merge.independent_count(["openalex", "europepmc"]), 2)
+
+    def test_inspire_is_independent(self):
+        self.assertEqual(merge.independent_count(["openalex", "inspire"]), 2)
+
+
+class TestOpenCitationsIdParsing(unittest.TestCase):
+    def test_parses_packed_identifier_string(self):
+        ids = sources._oc_ids(
+            "omid:br/06120344846 doi:10.1038/nature12373 "
+            "openalex:W2159974629 pmid:23903748")
+        self.assertEqual(ids["doi"], "10.1038/nature12373")
+        self.assertEqual(ids["openalex"], "W2159974629")
+        self.assertEqual(ids["pmid"], "23903748")
+
+    def test_handles_missing_and_empty(self):
+        self.assertEqual(sources._oc_ids(""), {})
+        self.assertEqual(sources._oc_ids(None), {})
+        self.assertNotIn("doi", sources._oc_ids("omid:br/123"))
+
+
+class TestEuropePmcRetractionSignal(unittest.TestCase):
+    """MEDLINE curation is a retraction signal independent of Crossref deposits
+    and of OpenAlex. Shapes copied from live Europe PMC responses."""
+
+    def test_retracted_publication_type(self):
+        rec = {"pub_types": ["Retracted Publication", "Journal Article"],
+               "comment_corrections": []}
+        status, notes = sources.epmc_publication_status(rec)
+        self.assertEqual(status, "retracted")
+        self.assertTrue(notes)
+
+    def test_retraction_in_link(self):
+        rec = {"pub_types": ["Journal Article"], "comment_corrections": [
+            {"type": "Retraction in", "reference": "Lancet. 2010;375:445"}]}
+        self.assertEqual(sources.epmc_publication_status(rec)[0], "retracted")
+
+    def test_expression_of_concern(self):
+        rec = {"pub_types": [], "comment_corrections": [
+            {"type": "Expression of concern in", "reference": "x"}]}
+        self.assertEqual(sources.epmc_publication_status(rec)[0], "concern")
+
+    def test_comment_in_is_not_a_retraction(self):
+        """"Comment in" is ordinary scholarly discussion, not a correction."""
+        rec = {"pub_types": ["Journal Article"], "comment_corrections": [
+            {"type": "Comment in", "reference": "Lancet. 1998;351:611"}]}
+        self.assertEqual(sources.epmc_publication_status(rec)[0], "ok")
+
+    def test_clean(self):
+        self.assertEqual(sources.epmc_publication_status(
+            {"pub_types": ["Journal Article"], "comment_corrections": []})[0], "ok")
+
+    def test_type_skips_funding_categories(self):
+        """MEDLINE sorts funding categories in with document types."""
+        self.assertEqual(sources._epmc_type(
+            ["Research Support, Non-U.S. Gov't", "research-article"]),
+            "research-article")
+
+
+class TestFullTextParsing(unittest.TestCase):
+    """A JATS body commonly mixes bare <p> children with <sec> blocks. Taking
+    only <sec> when any exists dropped 21 of 22 paragraphs on a real article."""
+
+    def _parse(self, xml):
+        import unittest.mock as mock
+        with mock.patch.object(sources, "fetch", return_value=(xml.encode(), {})):
+            return sources.europepmc_fulltext("PMC1")
+
+    def test_mixed_loose_paragraphs_and_sections(self):
+        ft = self._parse(
+            "<article><front><abstract><p>Abs</p></abstract></front><body>"
+            "<p>Loose one.</p><p>Loose two.</p>"
+            "<sec><title>Methods</title><p>We did things.</p></sec>"
+            "</body></article>")
+        headings = [x["heading"] for x in ft["sections"]]
+        self.assertEqual(headings, ["Abstract", "Body", "Methods"])
+        body = next(x for x in ft["sections"] if x["heading"] == "Body")
+        self.assertIn("Loose one.", body["text"])
+        self.assertIn("Loose two.", body["text"])
+
+    def test_sections_only(self):
+        ft = self._parse("<article><body><sec><title>Results</title>"
+                         "<p>Found it.</p></sec></body></article>")
+        self.assertEqual([x["heading"] for x in ft["sections"]], ["Results"])
+
+    def test_rejects_bad_pmcid(self):
+        for bad in ("../../etc", "PMC", "12345", "PMC1; DROP", ""):
+            with self.assertRaises(ValueError, msg=f"accepted {bad!r}"):
+                sources.europepmc_fulltext(bad)
 
 
 if __name__ == "__main__":

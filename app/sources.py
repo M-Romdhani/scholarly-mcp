@@ -319,9 +319,270 @@ def datacite_work(doi: str) -> dict | None:
         raise
 
 
+# ------------------------------------------------------------ Europe PMC
+
+EPMC_BASE = "europepmc/webservices/rest"
+
+# MEDLINE publication types, mirrored by Europe PMC. This is a retraction signal
+# independent of both Crossref and OpenAlex — indexed by NLM curators rather than
+# derived from publisher deposits, so it catches cases the other two miss.
+EPMC_RETRACTED_TYPES = {"retracted publication", "retraction of publication"}
+EPMC_CONCERN_TYPES = {"expression of concern"}
+# commentCorrectionList entries point from this paper to the notice about it.
+EPMC_RETRACTION_LINKS = {"retraction in"}
+EPMC_CONCERN_LINKS = {"expression of concern in"}
+
+
+def _epmc_authors(r: dict) -> list[str]:
+    authors = [a.get("fullName") for a in
+               ((r.get("authorList") or {}).get("author") or [])
+               if a.get("fullName")]
+    if authors:
+        return authors
+    # authorString is "Kucsko G, Maurer PC, ..." — usable when authorList is absent.
+    return [a.strip() for a in (r.get("authorString") or "").rstrip(".").split(",")
+            if a.strip()]
+
+
+def _epmc_type(pub_types: list) -> str | None:
+    """MEDLINE lists funding categories alongside document types, and the
+    funding ones often sort first — "Research Support, Non-U.S. Gov't" is not a
+    document type. Prefer anything else."""
+    usable = [t for t in pub_types
+              if t and not t.lower().startswith("research support")]
+    return (usable or pub_types or [None])[0]
+
+
+def _epmc_record(r: dict) -> dict:
+    ji = r.get("journalInfo") or {}
+    year = r.get("pubYear")
+    return _record(
+        "europepmc",
+        doi=r.get("doi"),
+        title=(r.get("title") or "").rstrip("."),
+        year=int(year) if str(year).isdigit() else None,
+        authors=_epmc_authors(r),
+        venue=(ji.get("journal") or {}).get("title"),
+        type=_epmc_type((r.get("pubTypeList") or {}).get("pubType") or []),
+        cited_by_count=r.get("citedByCount"),
+        abstract=r.get("abstractText"),
+        pmid=r.get("pmid"),
+        pmcid=r.get("pmcid"),
+        # isOpenAccess, NOT inEPMC, is what gates fullTextXML: a record can be
+        # inEPMC=Y and still 404 on full text when it is not open access.
+        is_open_access=(r.get("isOpenAccess") == "Y"),
+        pub_types=(r.get("pubTypeList") or {}).get("pubType") or [],
+        comment_corrections=[
+            {"type": c.get("type"), "reference": c.get("reference"),
+             "pmid": c.get("id")}
+            for c in ((r.get("commentCorrectionList") or {}).get("commentCorrection")
+                      or [])
+        ],
+    )
+
+
+def europepmc_search(query: str, limit: int) -> list[dict]:
+    url = build_url("www.ebi.ac.uk", f"{EPMC_BASE}/search", {
+        "query": query, "format": "json", "resultType": "core",
+        "pageSize": min(limit, 100),
+    })
+    data = fetch_json(url)
+    return [_epmc_record(r) for r in
+            ((data.get("resultList") or {}).get("result") or [])]
+
+
+def europepmc_by_doi(doi: str) -> dict | None:
+    """Exact DOI lookup. The quotes matter — an unquoted DOI is tokenized by the
+    query parser and returns loosely-related hits rather than nothing."""
+    clean = validate_doi(doi)
+    url = build_url("www.ebi.ac.uk", f"{EPMC_BASE}/search", {
+        "query": f'DOI:"{clean}"', "format": "json", "resultType": "core",
+        "pageSize": 1,
+    })
+    results = ((fetch_json(url).get("resultList") or {}).get("result") or [])
+    return _epmc_record(results[0]) if results else None
+
+
+def epmc_publication_status(rec: dict) -> tuple[str, list[str]]:
+    """Retraction status from MEDLINE publication types and correction links.
+
+    Independent of Crossref `updated-by` and of OpenAlex `is_retracted`: this is
+    NLM's own curation. Returns the same vocabulary as classify_updates so the
+    two can be compared directly.
+    """
+    status, notes = "ok", []
+    for t in rec.get("pub_types") or []:
+        low = (t or "").strip().lower()
+        if low in EPMC_RETRACTED_TYPES:
+            status = "retracted"
+            notes.append(f"MEDLINE publication type: {t}")
+        elif low in EPMC_CONCERN_TYPES and status == "ok":
+            status = "concern"
+            notes.append(f"MEDLINE publication type: {t}")
+    for c in rec.get("comment_corrections") or []:
+        low = (c.get("type") or "").strip().lower()
+        if low in EPMC_RETRACTION_LINKS:
+            status = "retracted"
+            notes.append(f"{c.get('type')}: {c.get('reference')}")
+        elif low in EPMC_CONCERN_LINKS and status != "retracted":
+            status = "concern"
+            notes.append(f"{c.get('type')}: {c.get('reference')}")
+    return status, notes
+
+
+def _jats_text(el) -> str:
+    return " ".join("".join(el.itertext()).split())
+
+
+def europepmc_fulltext(pmcid: str) -> dict:
+    """Open-access full text as JATS XML, parsed into sections.
+
+    Only open-access records have it; `inEPMC` is not sufficient and a
+    subscription record 404s here.
+    """
+    if not re.match(r"^PMC\d+$", pmcid or ""):
+        raise ValueError(f"not a PMC id: {pmcid!r}. Expected PMC followed by digits.")
+    url = build_url("www.ebi.ac.uk", f"{EPMC_BASE}/{pmcid}/fullTextXML")
+    body, _ = fetch(url, accept="application/xml")
+    root = ET.fromstring(body)
+
+    sections: list[dict] = []
+    front = root.find("front")
+    if front is not None:
+        abstract = front.find(".//abstract")
+        if abstract is not None:
+            sections.append({"heading": "Abstract", "text": _jats_text(abstract)})
+    # Walk the body in document order. A body commonly mixes bare <p> children
+    # with <sec> blocks; taking only <sec> when any exists silently drops most of
+    # the article (observed: 21 of 22 paragraphs lost).
+    body_el = root.find("body")
+    if body_el is not None:
+        loose: list[str] = []
+
+        def flush_loose() -> None:
+            if loose:
+                joined = " ".join(loose).strip()
+                if joined:
+                    sections.append({"heading": "Body", "text": joined})
+                loose.clear()
+
+        for child in body_el:
+            if child.tag == "sec":
+                flush_loose()
+                heading = (child.findtext("title") or "Untitled section").strip()
+                text = " ".join(_jats_text(p) for p in child.findall(".//p"))
+                if text:
+                    sections.append({"heading": heading, "text": text})
+            elif child.tag == "p":
+                text = _jats_text(child)
+                if text:
+                    loose.append(text)
+        flush_loose()
+
+    lic = root.find(".//license")
+    return {
+        "pmcid": pmcid,
+        "license": _jats_text(lic) if lic is not None else None,
+        "sections": sections,
+    }
+
+
+# ---------------------------------------------------------- INSPIRE-HEP
+
+INSPIRE_FIELDS = ("titles,dois,authors,publication_info,citation_count,"
+                  "arxiv_eprints,document_type,earliest_date,preprint_date")
+# INSPIRE's default ordering put 5-citation papers above the LIGO detection for
+# "gravitational waves binary black hole". mostcited is the usable ranking.
+INSPIRE_SORT = "mostcited"
+# Collaboration papers routinely list >1000 authors; keep the record readable.
+INSPIRE_MAX_AUTHORS = 25
+
+
+def _inspire_record(hit: dict) -> dict:
+    m = hit.get("metadata") or hit
+    pub = (m.get("publication_info") or [{}])[0]
+    # A record can carry several DOIs (publication, dataset, erratum). Prefer the
+    # publication one rather than whichever happens to be first.
+    dois = m.get("dois") or []
+    doi = next((d.get("value") for d in dois if d.get("material") in (None, "publication")),
+               (dois[0].get("value") if dois else None))
+    year = pub.get("year")
+    if not year:
+        for key in ("earliest_date", "preprint_date"):
+            raw = str(m.get(key) or "")[:4]
+            if raw.isdigit():
+                year = int(raw)
+                break
+    authors = [a.get("full_name") for a in (m.get("authors") or [])
+               if a.get("full_name")]
+    eprints = m.get("arxiv_eprints") or []
+    return _record(
+        "inspire",
+        doi=doi,
+        title=((m.get("titles") or [{}])[0]).get("title"),
+        year=int(year) if str(year).isdigit() else None,
+        authors=authors[:INSPIRE_MAX_AUTHORS],
+        author_count=len(authors),
+        venue=pub.get("journal_title"),
+        type=(m.get("document_type") or [None])[0],
+        cited_by_count=m.get("citation_count"),
+        arxiv_id=eprints[0].get("value") if eprints else None,
+    )
+
+
+def inspire_search(query: str, limit: int) -> list[dict]:
+    url = build_url("inspirehep.net", "api/literature", {
+        "q": query, "size": min(limit, 100), "sort": INSPIRE_SORT,
+        "fields": INSPIRE_FIELDS,
+    })
+    data = fetch_json(url)
+    return [_inspire_record(h) for h in ((data.get("hits") or {}).get("hits") or [])]
+
+
+# -------------------------------------------------------- OpenCitations
+
+def _oc_ids(blob: str) -> dict:
+    """OpenCitations packs identifiers into one space-separated string, e.g.
+    "omid:br/06120344846 doi:10.1038/nature12373 openalex:W2159974629 pmid:23903748"."""
+    out: dict[str, str] = {}
+    for token in (blob or "").split():
+        prefix, _, value = token.partition(":")
+        if value and prefix not in out:
+            out[prefix] = value
+    return out
+
+
+def opencitations_expand(doi: str, direction: str, limit: int) -> list[dict]:
+    """Citation edges from OpenCitations — a citation index independent of both
+    OpenAlex and Semantic Scholar.
+
+    Returns identifiers only; OpenCitations carries no titles. Bare records merge
+    by DOI with the other sources, which is where their value is: an edge
+    confirmed by a third independent index. Records it alone contributes are
+    hydrated by the caller via free OpenAlex lookups.
+    """
+    clean = validate_doi(doi)
+    endpoint = "references" if direction == "references" else "citations"
+    url = build_url("api.opencitations.net", f"index/v2/{endpoint}/doi:{clean}")
+    edges = fetch_json(url)
+    if not isinstance(edges, list):
+        return []
+    field = "cited" if direction == "references" else "citing"
+    out = []
+    for edge in edges[:limit]:
+        ids = _oc_ids(edge.get(field))
+        if not ids.get("doi"):
+            continue
+        out.append(_record("opencitations", doi=ids["doi"],
+                           openalex_id=ids.get("openalex")))
+    return out
+
+
 SEARCH_SOURCES = {
     "openalex": openalex_search,
     "crossref": crossref_search,
     "semanticscholar": s2_search,
     "arxiv": arxiv_search,
+    "europepmc": europepmc_search,
+    "inspire": inspire_search,
 }

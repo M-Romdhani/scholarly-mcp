@@ -1,6 +1,6 @@
 # scholarly-mcp
 
-MCP server giving Claude verified access to scholarly literature APIs: OpenAlex, Crossref, Semantic Scholar, arXiv, Unpaywall, DataCite.
+MCP server giving Claude verified access to scholarly literature APIs: OpenAlex, Crossref, Semantic Scholar, arXiv, Unpaywall, DataCite, Europe PMC, INSPIRE-HEP and OpenCitations.
 
 **Read `identity.md` first.** It explains the problem this solves and the rules the code must keep. Several design choices look like unnecessary restrictions without that context.
 
@@ -34,7 +34,7 @@ pip install -r requirements.txt
 cp .env.example .env          # fill in CONTACT_EMAIL at minimum
 set -a && source .env && set +a
 python -m app.main            # → http://127.0.0.1:8000/mcp
-python -m tests.test_offline  # 41 tests, no network needed
+python -m tests.test_offline  # 57 tests, no network needed
 ```
 
 Smoke test:
@@ -106,13 +106,35 @@ If you add a source, add its host to `ALLOWED_HOSTS`, add an adapter that builds
 
 ---
 
+## Sources
+
+| Source | Role | Key |
+|---|---|---|
+| OpenAlex | Discovery backbone + citation graph | free, required |
+| Crossref | Bibliographic truth, retraction records | none |
+| Semantic Scholar | Independent second opinion | optional, 429s without |
+| arXiv | Preprints | none |
+| Unpaywall | Legal OA locations | none |
+| DataCite | Dataset/software DOIs | none |
+| **Europe PMC** | Biomedical depth, MEDLINE retraction curation, **OA full text** | none |
+| **INSPIRE-HEP** | High-energy physics and astrophysics | none |
+| **OpenCitations** | Independent citation edges | none |
+
+Three of these carry retraction signals, and `verify_doi` checks all three: Crossref `updated-by`, OpenAlex `is_retracted`, and Europe PMC's MEDLINE curation (`Retracted Publication` publication type plus `Retraction in` links). They escalate only — a registry that has not recorded a retraction is not evidence there is none, so a quieter source never downgrades a retraction another one found.
+
+Two independence caveats are encoded in `merge.INDEPENDENCE_GROUPS` and matter for corroboration counts:
+
+- **OpenCitations is grouped with Crossref.** Its index is built largely from the reference lists publishers deposit at Crossref, so agreement between them is one deposit counted twice.
+- **OpenAlex is grouped with Unpaywall**, as before — same underlying OA dataset.
+
 ## Known gaps
 
-- **Europe PMC is allowlisted but has no adapter.** `www.ebi.ac.uk` is in `ALLOWED_HOSTS` ready for one. Worth adding for biomedical work — it serves open-access full text directly, which is the difference between `fulltext` and `abstract-only` in the ledger.
 - **No `search_by_field` tool** (author, year range, venue). OpenAlex list+filter is cheap ($0.10/1000) and this would be a natural sixth tool.
 - **Cache is not shared across instances.** Fine at one user; would need Redis if that changes. The in-process connection is lock-guarded, which is correct for one process but does not coordinate between replicas — keep this service at one instance.
 - **No structured logging or metrics.** Add if it moves beyond personal use.
-- **`resolve_fulltext` reports availability, not readership.** By design — see `identity.md` rule 5. Do not "improve" it into auto-setting the ledger's `access` field.
+- **`resolve_fulltext` reports availability, not readership.** By design — see `identity.md` rule 5. Do not "improve" it into auto-setting the ledger's `access` field. `fetch_fulltext` is the tool that actually returns text, and it reports exactly which sections it returned and whether the result was truncated, so `access` can be set from what was really read.
+- **Corroboration means little inside `expand_citations`.** A well-cited paper has thousands of citing works; each index returns its own slice and only OpenAlex sorts by citation count, so the slices rarely overlap. Measured: 29 unique from 29 raw across three indexes. The tool now says so in `corroboration_note` rather than letting a count of 1 read as disagreement. Corroboration remains meaningful in `search_literature`.
+- **Full text is Europe PMC only**, so effectively biomedical and life sciences. A physics paper will usually return `not_in_europepmc`; use `resolve_fulltext` and read the arXiv copy.
 
 ---
 

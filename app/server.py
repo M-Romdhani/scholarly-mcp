@@ -61,11 +61,16 @@ def _fail(exc: Exception) -> str:
 def search_literature(
     query: Annotated[str, Field(description="Search terms. Natural language or keywords.")],
     sources_to_query: Annotated[
-        list[Literal["openalex", "crossref", "semanticscholar", "arxiv"]],
+        list[Literal["openalex", "crossref", "semanticscholar", "arxiv",
+                     "europepmc", "inspire"]],
         Field(description="Which indexes to query. Use at least two independent "
                           "ones; a single index's ranking becomes your view of "
                           "the field. 'semanticscholar' rate-limits hard without "
-                          "a key — add it when S2_API_KEY is configured.")
+                          "a key — add it when S2_API_KEY is configured. Route "
+                          "by domain: 'europepmc' for biomedical and life "
+                          "sciences (it also carries MEDLINE curation), "
+                          "'inspire' for high-energy physics and astrophysics, "
+                          "'arxiv' for preprints generally.")
     ] = ["openalex", "crossref"],
     limit: Annotated[int, Field(ge=1, le=100,
                                 description="Max results per index.")] = 25,
@@ -237,6 +242,34 @@ def verify_doi(
     except Exception as e:
         out["openalex_crosscheck_error"] = _fail(e)
 
+    # Third retraction signal, independent of both Crossref deposits and
+    # OpenAlex. Europe PMC carries NLM's own MEDLINE curation ("Retracted
+    # Publication" as a publication type, plus "Retraction in" correction
+    # links), which catches records the other two miss.
+    try:
+        epmc = merge.cached(f"epmc:doi:{clean}",
+                            lambda: sources.europepmc_by_doi(clean))
+        if epmc:
+            epmc_status, epmc_notes = sources.epmc_publication_status(epmc)
+            out["europepmc_status"] = epmc_status
+            out["pmid"] = epmc.get("pmid")
+            out["pmcid"] = epmc.get("pmcid")
+            out["open_access_fulltext_available"] = epmc.get("is_open_access")
+            if epmc_notes:
+                out["status_notes"] = (out.get("status_notes") or []) + epmc_notes
+            # Escalate only. A registry that has not recorded a retraction is
+            # not evidence that there is none, so a quieter EPMC never downgrades
+            # a retraction Crossref or OpenAlex already found.
+            if sources.STATUS_RANK.get(epmc_status, 0) > sources.STATUS_RANK.get(
+                    out["publication_status"], 0):
+                out["publication_status"] = epmc_status
+                out["status_notes"] = (out.get("status_notes") or []) + [
+                    f"Escalated to '{epmc_status}' on Europe PMC / MEDLINE "
+                    f"curation, which Crossref and OpenAlex did not report."
+                ]
+    except Exception as e:
+        out["europepmc_crosscheck_error"] = _fail(e)
+
     if out["publication_status"] == "disputed_flag":
         out["guidance"] = ("DISPUTED. OpenAlex flags a retraction that Crossref "
                            "does not record. Do not cite this as clean evidence "
@@ -310,7 +343,35 @@ def expand_citations(
     except Exception as e:
         failed["openalex"] = _fail(e)
 
+    # OpenCitations: a third citation index. It returns identifiers only, so its
+    # records merge by DOI into the others; where it contributes a paper nobody
+    # else found, the title is filled in below by a free OpenAlex batch lookup.
+    try:
+        results.extend(merge.cached(
+            f"opencitations:{direction}:{clean}:{limit}",
+            lambda: sources.opencitations_expand(clean, direction, limit)))
+    except Exception as e:
+        failed["opencitations"] = _fail(e)
+
     merged = merge.merge(results)
+
+    unhydrated = [r for r in merged
+                  if not r.get("title") and r.get("openalex_id")]
+    if unhydrated:
+        try:
+            by_id = {h.get("openalex_id"): h for h in merge.cached(
+                f"openalex:hydrate:{direction}:{clean}:{limit}",
+                lambda: sources.openalex_batch(
+                    [r["openalex_id"] for r in unhydrated], limit))}
+            for rec in unhydrated:
+                filled = by_id.get(rec["openalex_id"])
+                if filled:
+                    for k, v in filled.items():
+                        if k != "found_by" and rec.get(k) in (None, "", []):
+                            rec[k] = v
+        except Exception as e:
+            failed["openalex_hydration"] = _fail(e)
+
     merged.sort(key=lambda r: -(r.get("cited_by_count") or 0))
 
     out = {
@@ -321,6 +382,16 @@ def expand_citations(
         "verified": False,
         "results": merged[:limit],
     }
+    succeeded = 3 - len(failed)
+    if succeeded > 1 and not any(r.get("corroboration", 0) > 1 for r in merged):
+        out["corroboration_note"] = (
+            "Corroboration is 1 for every result, and that is expected here, not "
+            "a warning. A well-cited paper has thousands of citing works; each "
+            "index returned its own slice of them, and only OpenAlex sorts by "
+            "citation count, so the slices rarely overlap. Low corroboration in "
+            "this tool means the slices differed, NOT that the indexes disagree "
+            "about whether a paper is real. Use search_literature or verify_doi "
+            "to judge that.")
     if failed:
         out["coverage_warning"] = (
             f"{len(failed)} source(s) failed; this expansion is partial.")
@@ -383,6 +454,115 @@ def resolve_fulltext(
         out["caution"] = ("This is the submitted (pre-peer-review) version. It "
                           "may differ from the version of record.")
     return out
+
+
+@mcp.tool(
+    description=(
+        "Retrieve the actual open-access FULL TEXT of a paper from Europe PMC, "
+        "parsed into sections. Unlike resolve_fulltext, which only reports where "
+        "a copy lives, this returns the text itself — so after calling it you "
+        "have genuinely read the full text (or the section you asked for) and "
+        "may record the ledger's access field as such. Only open-access records "
+        "have retrievable text; being indexed in Europe PMC is not sufficient. "
+        "Call with no section first to see what sections exist, then request one "
+        "by name to read it in full without spending context on the whole paper."
+    ),
+)
+def fetch_fulltext(
+    doi: Annotated[str, Field(description="DOI of the paper to retrieve.")],
+    section: Annotated[str | None, Field(
+        description="Section heading to return, matched case-insensitively on a "
+                    "prefix (e.g. 'Methods', 'Results', 'Discussion'). Omit to "
+                    "return as much of the paper as fits in max_chars.")] = None,
+    max_chars: Annotated[int, Field(ge=1000, le=200000, description=(
+        "Cap on returned text. Content beyond it is dropped and reported in "
+        "'truncated'."))] = 40000,
+) -> dict[str, Any]:
+    try:
+        clean = sources.validate_doi(doi)
+    except ValueError as e:
+        return {"doi": doi, "retrieved": False, "error": _fail(e)}
+
+    try:
+        rec = merge.cached(f"epmc:doi:{clean}",
+                           lambda: sources.europepmc_by_doi(clean))
+    except Exception as e:
+        return {"doi": clean, "retrieved": False, "error": _fail(e),
+                "interpretation": ("Europe PMC could not be reached. This says "
+                                   "nothing about whether full text exists.")}
+
+    if not rec:
+        return {"doi": clean, "retrieved": False, "reason": "not_in_europepmc",
+                "interpretation": (
+                    "Not indexed in Europe PMC, which covers biomedical and life "
+                    "sciences most completely. Try resolve_fulltext for an OA "
+                    "copy elsewhere. Record access as metadata-only unless you "
+                    "actually read it.")}
+    if not rec.get("is_open_access") or not rec.get("pmcid"):
+        return {"doi": clean, "retrieved": False, "reason": "not_open_access",
+                "pmid": rec.get("pmid"), "pmcid": rec.get("pmcid"),
+                "title": rec.get("title"),
+                "interpretation": (
+                    "Indexed in Europe PMC but not open access, so the full text "
+                    "cannot be retrieved here. Being indexed is not the same as "
+                    "being readable. Use resolve_fulltext to look for a legal OA "
+                    "copy, and do not record access as fulltext unless you "
+                    "obtained and read one.")}
+
+    try:
+        ft = merge.cached(f"epmc:fulltext:{rec['pmcid']}",
+                          lambda: sources.europepmc_fulltext(rec["pmcid"]))
+    except Exception as e:
+        return {"doi": clean, "retrieved": False, "pmcid": rec.get("pmcid"),
+                "error": _fail(e)}
+
+    sections = ft.get("sections") or []
+    available = [x["heading"] for x in sections]
+
+    if section:
+        wanted = section.strip().lower()
+        sections = [x for x in sections
+                    if x["heading"].lower().startswith(wanted)]
+        if not sections:
+            return {"doi": clean, "retrieved": False,
+                    "reason": "section_not_found", "requested_section": section,
+                    "sections_available": available,
+                    "interpretation": ("No section matched. Pick one of "
+                                       "sections_available exactly.")}
+
+    out_sections, used, dropped = [], 0, []
+    for x in sections:
+        room = max_chars - used
+        if room <= 0:
+            dropped.append(x["heading"])
+            continue
+        text = x["text"]
+        if len(text) > room:
+            text = text[:room]
+            dropped.append(f"{x['heading']} (partial)")
+        out_sections.append({"heading": x["heading"], "text": text})
+        used += len(text)
+
+    return {
+        "doi": clean,
+        "retrieved": True,
+        "source": "europepmc",
+        "pmcid": rec.get("pmcid"),
+        "pmid": rec.get("pmid"),
+        "title": rec.get("title"),
+        "license": ft.get("license"),
+        "sections_available": available,
+        "sections_returned": [x["heading"] for x in out_sections],
+        "chars_returned": used,
+        "truncated": bool(dropped),
+        "omitted": dropped,
+        "sections": out_sections,
+        "access_note": (
+            "You have now read this text. Record the ledger's access field as "
+            "'fulltext' only for the sections actually returned above — if "
+            "'truncated' is true, what you read is partial, and a claim resting "
+            "on an omitted section is not supported by this retrieval."),
+    }
 
 
 @mcp.tool(
