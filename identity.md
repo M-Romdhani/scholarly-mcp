@@ -27,7 +27,9 @@ That second one is why this server exists. A research assistant that trusts a si
 
 ## Who this is for
 
-Med — physicist, builds early-stage products, uses Claude for science and code work. Direct user, not a customer-facing deployment.
+A researcher using an AI assistant for literature work, running their own instance. Direct user, not a customer-facing deployment.
+
+This is self-hosted by design. The server reads every credential from its environment and none ships with the code, so anyone running it deploys their own instance and requests their own API keys. That is not incidental — a shared deployment would put one contact email on everyone's outbound traffic and let strangers spend one budget, which the sources these APIs come from would rightly treat as abuse.
 
 It backs two skills:
 
@@ -36,7 +38,7 @@ It backs two skills:
 
 The skills contain the *method* (five search rounds, verification discipline, evidence ledger schema). This server provides the *access*. Neither replaces the other. If the server is unreachable, the skills fall back to search tools at reduced coverage — degraded, not broken.
 
-Traffic is one person's research sessions. Tens to low hundreds of calls per session. Design for correctness and clear failure, not for scale.
+Traffic is a single researcher's sessions: tens to low hundreds of calls each. Design for correctness and clear failure, not for scale. Several decisions follow directly from that assumption — a local SQLite cache rather than Redis, one process rather than replicas, no per-user accounting. If that assumption ever stops holding, those are the things that break first.
 
 ---
 
