@@ -377,6 +377,39 @@ class TestRelevanceRanking(unittest.TestCase):
                          "merge must keep the best rank any index gave it")
 
 
+class TestRetractionAlerts(unittest.TestCase):
+    """OpenAlex returns is_retracted on every record and Europe PMC returns
+    MEDLINE publication types. That data was already being fetched and then
+    ignored, so a retracted paper could sit unremarked in a result set unless
+    someone ran verify_doi on all N candidates first."""
+
+    def _alerts(self, records):
+        from app import server
+        return server._retraction_alerts(records)
+
+    def test_flags_openalex_is_retracted(self):
+        a = self._alerts([{"doi": "10.1/r", "title": "T", "is_retracted": True},
+                          {"doi": "10.1/ok", "title": "U", "is_retracted": False}])
+        self.assertEqual(len(a), 1)
+        self.assertEqual(a[0]["doi"], "10.1/r")
+
+    def test_flags_medline_retracted_publication(self):
+        a = self._alerts([{"doi": "10.1/r", "title": "T",
+                           "pub_types": ["Retracted Publication", "Journal Article"]}])
+        self.assertEqual(len(a), 1)
+        self.assertEqual(a[0]["medline_publication_types"], ["Retracted Publication"])
+
+    def test_unknown_status_is_not_flagged(self):
+        """is_retracted=None means the index did not say, which is not a flag."""
+        self.assertEqual(self._alerts([{"doi": "10.1/x", "is_retracted": None}]), [])
+        self.assertEqual(self._alerts([{"doi": "10.1/x"}]), [])
+
+    def test_clean_records_produce_no_alerts(self):
+        self.assertEqual(
+            self._alerts([{"doi": "10.1/a", "is_retracted": False,
+                           "pub_types": ["Journal Article"]}]), [])
+
+
 class TestRequestPacing(unittest.TestCase):
     """Semantic Scholar issues keys limited to 1 request/second cumulative
     across all endpoints, so search and citation calls share one budget."""

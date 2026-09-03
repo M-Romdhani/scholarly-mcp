@@ -38,6 +38,34 @@ mcp = MCPServer(
 )
 
 
+def _retraction_alerts(records: list[dict]) -> list[dict]:
+    """Surface retraction flags already present in results.
+
+    OpenAlex returns `is_retracted` on every record and Europe PMC returns
+    MEDLINE publication types, so this costs no extra call — the data was
+    fetched and then went unread. A retracted paper sitting unremarked in a
+    result set is the failure this server exists to prevent, and requiring a
+    separate verify_doi on all N candidates before anyone notices is a
+    verification step nobody performs in practice.
+
+    These are screening flags, not verdicts: OpenAlex's boolean conflates
+    corrections and expressions of concern with retractions and misses some
+    retractions entirely, so each hit still needs verify_doi.
+    """
+    alerts = []
+    for r in records:
+        pub_types = [t for t in (r.get("pub_types") or [])
+                     if "retract" in (t or "").lower()]
+        if r.get("is_retracted") is True or pub_types:
+            alerts.append({
+                "doi": r.get("doi"),
+                "title": r.get("title"),
+                "openalex_is_retracted": r.get("is_retracted"),
+                "medline_publication_types": pub_types or None,
+            })
+    return alerts
+
+
 def _fail(exc: Exception) -> str:
     if isinstance(exc, SecurityError):
         return f"refused: {exc}"
@@ -113,6 +141,15 @@ def search_literature(
         "verified": False,
         "candidates": merged,
     }
+    alerts = _retraction_alerts(merged)
+    if alerts:
+        result["retraction_alerts"] = alerts
+        result["retraction_warning"] = (
+            f"{len(alerts)} of these candidates are flagged as retracted by an "
+            f"index. Run verify_doi on each before citing it — these are "
+            f"screening flags, not verdicts. If one is central to your topic, "
+            f"look for others from the same authors or lab: retractions in a "
+            f"research programme rarely occur alone.")
     if failed:
         result["coverage_warning"] = (
             f"{len(failed)} of {len(sources_to_query)} sources failed. Coverage "
@@ -397,6 +434,16 @@ def expand_citations(
             "this tool means the slices differed, NOT that the indexes disagree "
             "about whether a paper is real. Use search_literature or verify_doi "
             "to judge that.")
+    alerts = _retraction_alerts(out["results"])
+    if alerts:
+        out["retraction_alerts"] = alerts
+        out["retraction_warning"] = (
+            f"{len(alerts)} work(s) in this expansion are flagged as retracted. "
+            f"Verify each with verify_doi. Expanding around a retracted paper is "
+            f"how a compromised line of work is mapped — but note that cited_by "
+            f"is sorted by citation count, so retracted follow-ups with few "
+            f"citations may sit outside this window. Search the authors' names "
+            f"and the retraction coverage as well.")
     if failed:
         out["coverage_warning"] = (
             f"{len(failed)} source(s) failed; this expansion is partial.")
