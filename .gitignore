@@ -4,5 +4,6 @@ __pycache__/
 .venv/
 *.sqlite
 
-# Reference skills kept locally for context; not part of this server.
-*.skill
+# Built skill bundles are artifacts of skills/build.sh; the sources under
+# skills/ are what is tracked.
+/*.skill

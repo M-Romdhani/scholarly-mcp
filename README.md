@@ -144,9 +144,25 @@ Two independence caveats are encoded in `merge.INDEPENDENCE_GROUPS` and matter f
 
 ---
 
-## Related
+## The skills
 
-- `scholarly-source-gathering` skill — the discovery and verification method
-- `scientific-research-publisher` skill — verified sources → typeset PDF
+Both live in `skills/`, tracked as sources rather than as zip bundles, because a
+`.skill` file is an archive: committing only the archive leaves every edit
+without a diff or a history, which is how a change to a skill becomes
+unreviewable. Build the installable bundles with:
+
+```bash
+./skills/build.sh          # writes ./<name>.skill for each skill
+```
+
+- **`scholarly-source-gathering`** — the discovery and verification method. Tightly coupled to this server: Step 0 checks for the MCP tools before probing the network, the five rounds map onto specific tools, and it names them directly. Change a tool name here and change it there in the same commit.
+- **`scientific-research-publisher`** — verified sources through to a typeset PDF. Only loosely coupled (the `access` field and `fetch_fulltext`); it runs with no server at all.
+
+`references/review_and_qa.md` in the publisher skill carries the review pass.
+Reviewing is deliberately not part of the gathering skill: a reviewer that
+reuses the gathering step's queries and source set reproduces its blind spots
+and returns a clean report. Measured — a review reported a search as returning
+nothing usable and dropped the argument; the paper sat at rank 1 under different
+phrasing.
 
 Once this server is live, `references/access_routes.md` in the gathering skill can be trimmed: route B and the `web_fetch` substitution trap stop applying when the MCP is connected.

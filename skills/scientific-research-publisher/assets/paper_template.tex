@@ -1,0 +1,191 @@
+%==============================================================================
+% Scientific manuscript template — self-contained, journal-neutral.
+% Compiles with: latexmk -pdf -interaction=nonstopmode paper.tex
+% Requires only standard TeX Live packages (no journal class, no biblatex).
+%
+% To target a specific journal, swap \documentclass and add their metadata
+% macros; the body should transfer unchanged.
+%==============================================================================
+\documentclass[11pt,a4paper]{article}
+
+% --- Encoding & language -----------------------------------------------------
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+
+% --- Fonts -------------------------------------------------------------------
+\usepackage{mathptmx}          % Times text + matching math. Alternative: charter
+\usepackage{microtype}         % Fixes most justification complaints automatically
+
+% --- Page geometry -----------------------------------------------------------
+\usepackage[margin=25mm]{geometry}
+
+% --- Mathematics -------------------------------------------------------------
+\usepackage{amsmath,amssymb,mathtools}
+\usepackage{bm}
+\usepackage{siunitx}           % \SI{3.2}{\micro\meter}, S columns for tables
+
+% --- Floats ------------------------------------------------------------------
+\usepackage{graphicx}
+\usepackage{booktabs}          % \toprule \midrule \bottomrule — no vertical rules
+\usepackage{threeparttable}    % table footnotes that stay inside the float
+\usepackage{multirow}
+\usepackage{longtable}
+\usepackage{float}
+\usepackage{placeins}          % \FloatBarrier
+\usepackage[font=small,labelfont=bf,width=0.92\textwidth]{caption}
+\usepackage{subcaption}
+
+% --- Structure ---------------------------------------------------------------
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage{setspace}          % \onehalfspacing for review copies
+\usepackage{lineno}            % \linenumbers when a journal wants them
+
+% --- References & links (load order matters: hyperref late, cleveref last) ----
+\usepackage[numbers,sort&compress]{natbib}
+\bibliographystyle{plainnat}   % or unsrtnat, abbrvnat, apalike, ieeetr
+\usepackage{url}
+\usepackage[hidelinks]{hyperref}
+\usepackage[capitalise,nameinlink]{cleveref}
+
+% --- Typographic hygiene -----------------------------------------------------
+\widowpenalty=10000            % no single line stranded at a page top
+\clubpenalty=10000             % no single line stranded at a page bottom
+\displaywidowpenalty=10000
+\sloppy\emergencystretch=1em   % prefer slightly loose lines over margin overflow
+
+\titleformat{\section}{\normalfont\fontsize{14}{16}\bfseries}{\thesection}{1em}{}
+\titleformat{\subsection}{\normalfont\fontsize{12}{14}\bfseries}{\thesubsection}{1em}{}
+\titleformat{\subsubsection}{\normalfont\fontsize{11}{13}\itshape}{\thesubsubsection}{1em}{}
+\titlespacing*{\section}{0pt}{14pt plus 3pt minus 2pt}{6pt plus 2pt minus 1pt}
+\titlespacing*{\subsection}{0pt}{11pt plus 2pt minus 2pt}{4pt plus 2pt minus 1pt}
+
+%==============================================================================
+\begin{document}
+
+\title{\bfseries Full Title Stating the Finding, Not the Topic}
+\author{Author Name\thanks{Affiliation. Corresponding author: email@example.org}}
+\date{\today}
+\maketitle
+
+\begin{abstract}
+\noindent
+Context in one or two sentences. The specific question. What was done. What was
+found, including the key quantity with its uncertainty. What it means. The
+principal limitation. Written last, from \texttt{claims.json}; only
+source-backed or explicitly hedged results appear here.
+\end{abstract}
+
+\vspace{0.5em}
+\noindent\textbf{Keywords:} keyword one; keyword two; keyword three
+
+%------------------------------------------------------------------------------
+\section{Introduction}
+\label{sec:intro}
+
+Four moves: the problem, what is known, the gap, the contribution. The gap
+follows from the search; the contribution is sized to the evidence
+\citep{example2024}.
+
+%------------------------------------------------------------------------------
+\section{Background}
+\label{sec:background}
+
+Formalism and prior results the reader needs. Established results are cited and
+labelled as known:
+\begin{equation}
+  S = k_B \ln \Omega ,
+  \label{eq:boltzmann}
+\end{equation}
+where $S$ is the entropy (\si{\joule\per\kelvin}), $k_B$ the Boltzmann constant,
+and $\Omega$ the number of accessible microstates. \Cref{eq:boltzmann} is a
+standard result \citep{example2024}; equations derived in this work are
+identified as such where they appear.
+
+%------------------------------------------------------------------------------
+\section{Methods}
+\label{sec:methods}
+
+Enough detail to reproduce: procedure, parameters, seeds, software versions,
+and the analysis choices that were fixed in advance.
+
+%------------------------------------------------------------------------------
+\section{Results}
+\label{sec:results}
+
+Findings only. Interpretation belongs in the discussion.
+
+\begin{figure}[!htbp]
+  \centering
+  % \includegraphics[width=0.8\linewidth]{figures/fig1.pdf}
+  \rule{0.8\linewidth}{4cm}% placeholder — replace with \includegraphics
+  \caption{Self-contained caption. State what is plotted, the units, the
+           uncertainty convention, and $n$. A reader who reads only the figures
+           should understand this one.}
+  \label{fig:example}
+\end{figure}
+
+\Cref{fig:example} shows the primary result, and \cref{tab:example} reports the
+fitted values. Every float must be referenced in the text like this --
+\texttt{pdf\_qa.py} treats an undiscussed figure or table as an error, because it
+means either the float is unnecessary or the text has a gap.
+
+\begin{table}[!htbp]
+  \centering
+  \caption{Fit results across binning choices.}
+  \label{tab:example}
+  \begin{tabular}{l S[table-format=1.2] S[table-format=1.2]}
+    \toprule
+    Bins & {Exponent} & {Uncertainty} \\
+    \midrule
+    20  & 1.83 & 0.07 \\
+    50  & 1.84 & 0.06 \\
+    100 & 1.85 & 0.08 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\FloatBarrier
+
+%------------------------------------------------------------------------------
+\section{Discussion}
+\label{sec:discussion}
+
+Interpretation, with inferences marked as inferences and alternative
+explanations considered rather than dismissed.
+
+%------------------------------------------------------------------------------
+\section{Limitations}
+\label{sec:limitations}
+
+Specific, not ritual. State what would change the conclusion.
+
+%------------------------------------------------------------------------------
+\section{Conclusion}
+\label{sec:conclusion}
+
+What is now known that was not known before, at the size the evidence supports.
+
+%------------------------------------------------------------------------------
+\section*{Data and code availability}
+Where the data and analysis code live, and under what terms.
+
+\section*{Disclosure of AI involvement}
+This manuscript was prepared with substantial assistance from an AI system
+(literature retrieval, drafting, analysis, and typesetting). All claims were
+checked against retrieved sources, and all reported computations were executed.
+Responsibility for the content rests with the named author(s).
+
+\section*{Acknowledgements}
+Funding, facilities, and people.
+
+%------------------------------------------------------------------------------
+\bibliography{refs}
+
+\appendix
+\section{Supplementary derivations}
+\label{app:derivations}
+
+Routine algebra and secondary analyses.
+
+\end{document}
