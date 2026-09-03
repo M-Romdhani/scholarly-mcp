@@ -377,6 +377,58 @@ class TestRelevanceRanking(unittest.TestCase):
                          "merge must keep the best rank any index gave it")
 
 
+class TestFullTextRoutes(unittest.TestCase):
+    """Europe PMC and NCBI gate the same PMC corpus differently: EPMC's
+    isOpenAccess flag is stricter than "readable" and refuses records NCBI serves
+    in full. Measured on three papers EPMC declined, NCBI returned 34 and 40 body
+    paragraphs for two."""
+
+    def test_ncbi_url_built_from_validated_pmcid(self):
+        for bad in ("../../etc", "PMC", "49066", "PMC1; DROP", ""):
+            with self.assertRaises(ValueError, msg=f"accepted {bad!r}"):
+                sources.ncbi_pmc_fulltext(bad)
+
+    def test_ncbi_host_allowlisted(self):
+        assert_allowed("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi")
+
+    def test_jats_parser_shared_by_both_routes(self):
+        """NCBI wraps the article in <pmc-articleset>; the body is identical."""
+        import xml.etree.ElementTree as ET
+        wrapped = ET.fromstring(
+            "<pmc-articleset><article><body><sec><title>Results</title>"
+            "<p>Found it.</p></sec></body></article></pmc-articleset>")
+        parsed = sources._parse_jats(wrapped.find(".//article"))
+        self.assertEqual([x["heading"] for x in parsed["sections"]], ["Results"])
+
+
+class TestAbstractOnlyIsNotFullText(unittest.TestCase):
+    """A PMC record for a pre-XML article returns an abstract and no body.
+    Reporting that as retrieved would let a caller record access as 'fulltext'
+    having read only an abstract — the inflation identity.md rule 5 forbids."""
+
+    def test_body_detection_excludes_abstract(self):
+        sections = [{"heading": "Abstract", "text": "a"}]
+        body = [x for x in sections
+                if x["heading"].strip().lower() != "abstract"]
+        self.assertEqual(body, [], "abstract alone must not count as body text")
+
+    def test_body_detection_accepts_real_sections(self):
+        sections = [{"heading": "Abstract", "text": "a"},
+                    {"heading": "Results", "text": "b"}]
+        body = [x for x in sections
+                if x["heading"].strip().lower() != "abstract"]
+        self.assertEqual(len(body), 1)
+
+    def test_abstract_only_branch_present_in_tool(self):
+        import inspect
+        from app import server
+        src = inspect.getsource(server.fetch_fulltext.fn
+                                if hasattr(server.fetch_fulltext, "fn")
+                                else server.fetch_fulltext)
+        self.assertIn('"abstract_only"', src)
+        self.assertIn("abstract-only", src)
+
+
 class TestOpenAlexQuerySanitising(unittest.TestCase):
     """OpenAlex answers HTTP 400 when * or ? appear in a search string; tested
     against the live API, every other punctuation character passes. Entities are

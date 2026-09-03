@@ -29,6 +29,8 @@ _last_openalex_seen_at: float | None = None
 MIN_INTERVAL = {
     "export.arxiv.org": 3.0,
     "api.semanticscholar.org": 1.1,
+    # NCBI asks for no more than 3 requests/second without an API key.
+    "eutils.ncbi.nlm.nih.gov": 0.4,
 }
 _last_call: dict[str, float] = {}
 _pace_lock = threading.Lock()

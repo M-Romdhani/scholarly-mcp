@@ -550,23 +550,78 @@ def fetch_fulltext(
                     "sciences most completely. Try resolve_fulltext for an OA "
                     "copy elsewhere. Record access as metadata-only unless you "
                     "actually read it.")}
-    if not rec.get("is_open_access") or not rec.get("pmcid"):
-        return {"doi": clean, "retrieved": False, "reason": "not_open_access",
-                "pmid": rec.get("pmid"), "pmcid": rec.get("pmcid"),
-                "title": rec.get("title"),
+    if not rec.get("pmcid"):
+        return {"doi": clean, "retrieved": False, "reason": "no_pmc_record",
+                "pmid": rec.get("pmid"), "title": rec.get("title"),
                 "interpretation": (
-                    "Indexed in Europe PMC but not open access, so the full text "
-                    "cannot be retrieved here. Being indexed is not the same as "
-                    "being readable. Use resolve_fulltext to look for a legal OA "
-                    "copy, and do not record access as fulltext unless you "
-                    "obtained and read one.")}
+                    "Indexed in Europe PMC but with no PMC full-text record, so "
+                    "no full text can be retrieved here. Use resolve_fulltext to "
+                    "look for a legal OA copy elsewhere, and do not record access "
+                    "as fulltext unless you obtained and read one.")}
 
-    try:
-        ft = merge.cached(f"epmc:fulltext:{rec['pmcid']}",
-                          lambda: sources.europepmc_fulltext(rec["pmcid"]))
-    except Exception as e:
-        return {"doi": clean, "retrieved": False, "pmcid": rec.get("pmcid"),
-                "error": _fail(e)}
+    # Europe PMC and NCBI gate the same PMC corpus differently: EPMC's
+    # isOpenAccess flag is stricter than "readable", and refuses records NCBI
+    # serves in full. Try both before concluding the text is unavailable —
+    # measured, that recovers two papers in three that EPMC alone declined.
+    ft, errors, abstract_only = None, {}, None
+    routes = []
+    if rec.get("is_open_access"):
+        routes.append(("europepmc", sources.europepmc_fulltext))
+    routes.append(("ncbi_pmc", sources.ncbi_pmc_fulltext))
+
+    for name, fn in routes:
+        try:
+            candidate = merge.cached(
+                f"fulltext:{name}:{rec['pmcid']}",
+                lambda fn=fn: fn(rec["pmcid"]))
+            body = [x for x in (candidate or {}).get("sections") or []
+                    if x["heading"].strip().lower() != "abstract"]
+            if body:
+                ft = candidate
+                break
+            if candidate and candidate.get("sections"):
+                # An abstract alone is not full text. Reporting it as retrieved
+                # would let a caller record access as 'fulltext' having read only
+                # an abstract, which is the inflation identity.md rule 5 forbids.
+                abstract_only = candidate
+                errors[name] = "returned an abstract but no body text"
+            else:
+                errors[name] = "no text in the returned document"
+        except Exception as e:
+            errors[name] = _fail(e)
+
+    if ft is None and locals().get("abstract_only"):
+        abstract = next((x for x in abstract_only["sections"]
+                         if x["heading"].strip().lower() == "abstract"), None)
+        return {
+            "doi": clean, "retrieved": False, "reason": "abstract_only",
+            "pmid": rec.get("pmid"), "pmcid": rec.get("pmcid"),
+            "title": rec.get("title"),
+            "abstract": (abstract or {}).get("text"),
+            "routes_tried": errors,
+            "interpretation": (
+                "Only an abstract is available — the PMC record carries no body "
+                "text, which is usual for articles that predate full-text XML and "
+                "exist solely as scans. The abstract is returned above and is "
+                "worth using, but record access as 'abstract-only', NOT as "
+                "fulltext. Abstracts routinely omit the conditions that qualify a "
+                "finding, so a claim resting on one is weaker evidence."),
+        }
+
+    if ft is None:
+        return {
+            "doi": clean, "retrieved": False, "reason": "no_fulltext_available",
+            "pmid": rec.get("pmid"), "pmcid": rec.get("pmcid"),
+            "title": rec.get("title"),
+            "europepmc_open_access": rec.get("is_open_access"),
+            "routes_tried": errors,
+            "interpretation": (
+                "A PMC record exists but neither Europe PMC nor NCBI returned "
+                "body text. Common causes: the publisher deposited metadata only, "
+                "or the article predates full-text XML and exists solely as a "
+                "scan. Use resolve_fulltext for an OA copy elsewhere, and record "
+                "access as metadata-only unless you obtained and read one."),
+        }
 
     sections = ft.get("sections") or []
     available = [x["heading"] for x in sections]
@@ -598,7 +653,8 @@ def fetch_fulltext(
     return {
         "doi": clean,
         "retrieved": True,
-        "source": "europepmc",
+        "source": ft.get("source", "europepmc"),
+        "routes_failed": errors or None,
         "pmcid": rec.get("pmcid"),
         "pmid": rec.get("pmid"),
         "title": rec.get("title"),

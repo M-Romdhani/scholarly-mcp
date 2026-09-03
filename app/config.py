@@ -20,6 +20,7 @@ ALLOWED_HOSTS = frozenset({
     "api.datacite.org",
     "inspirehep.net",         # INSPIRE-HEP (high-energy physics)
     "api.opencitations.net",  # OpenCitations (independent citation index)
+    "eutils.ncbi.nlm.nih.gov",  # NCBI E-utilities (PMC full text)
 })
 
 CONTACT_EMAIL = os.environ.get("CONTACT_EMAIL", "").strip()
