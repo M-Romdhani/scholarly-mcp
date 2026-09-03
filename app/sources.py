@@ -95,9 +95,22 @@ def _oa_record(w: dict) -> dict:
     )
 
 
+# OpenAlex treats * and ? as wildcard operators and answers HTTP 400 when they
+# appear in a search string. Tested against the live API: every other punctuation
+# character passes, these two do not. It matters because entities are sometimes
+# named with them — "Aβ*56" is the actual name of a molecule — so searching for
+# the thing by its real name crashed the call rather than returning nothing.
+_OA_SEARCH_BREAKS = str.maketrans({"*": " ", "?": " "})
+
+
+def _oa_query(query: str) -> str:
+    return re.sub(r"\s+", " ", query.translate(_OA_SEARCH_BREAKS)).strip()
+
+
 def openalex_search(query: str, limit: int) -> list[dict]:
     url = build_url("api.openalex.org", "works", _oa_params({
-        "search": query, "per_page": min(limit, 100), "select": OA_SELECT,
+        "search": _oa_query(query), "per_page": min(limit, 100),
+        "select": OA_SELECT,
     }))
     return [_oa_record(w) for w in (fetch_json(url).get("results") or [])]
 

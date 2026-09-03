@@ -377,6 +377,24 @@ class TestRelevanceRanking(unittest.TestCase):
                          "merge must keep the best rank any index gave it")
 
 
+class TestOpenAlexQuerySanitising(unittest.TestCase):
+    """OpenAlex answers HTTP 400 when * or ? appear in a search string; tested
+    against the live API, every other punctuation character passes. Entities are
+    sometimes named with them — "Aβ*56" is a real molecule name — so searching
+    for the thing by its actual name crashed the call."""
+
+    def test_wildcards_removed(self):
+        self.assertEqual(sources._oa_query("Abeta*56 oligomer"), "Abeta 56 oligomer")
+        self.assertEqual(sources._oa_query("what? oligomer"), "what oligomer")
+
+    def test_other_punctuation_preserved(self):
+        q = 'amyloid-beta (1-42) "oligomer": a review/analysis'
+        self.assertEqual(sources._oa_query(q), q)
+
+    def test_collapses_resulting_whitespace(self):
+        self.assertEqual(sources._oa_query("a * ? b"), "a b")
+
+
 class TestRetractionAlerts(unittest.TestCase):
     """OpenAlex returns is_retracted on every record and Europe PMC returns
     MEDLINE publication types. That data was already being fetched and then
