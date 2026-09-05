@@ -66,14 +66,18 @@ def _retraction_screen(records: list[dict]) -> dict:
     for r in records:
         pub_types = [t for t in (r.get("pub_types") or [])
                      if "retract" in (t or "").lower()]
-        if r.get("is_retracted") is not None or r.get("pub_types"):
+        cr_status = r.get("crossref_status")
+        if (r.get("is_retracted") is not None or r.get("pub_types")
+                or cr_status is not None):
             with_data += 1
-        if r.get("is_retracted") is True or pub_types:
+        if (r.get("is_retracted") is True or pub_types
+                or cr_status in ("retracted", "concern")):
             alerts.append({
                 "doi": r.get("doi"),
                 "title": r.get("title"),
                 "openalex_is_retracted": r.get("is_retracted"),
                 "medline_publication_types": pub_types or None,
+                "crossref_status": cr_status,
             })
 
     screen = {

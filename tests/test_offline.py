@@ -491,6 +491,26 @@ class TestRetractionScreen(unittest.TestCase):
         self.assertEqual(s["records_screened"], 3)
         self.assertEqual(s["records_carrying_status_data"], 2)
 
+    def test_crossref_status_counts_as_status_data(self):
+        """Crossref returns updated-by on search results and the adapter now
+        carries it, so a Crossref-only search is a real screen rather than an
+        uninformative one."""
+        s = self._screen([{"doi": "10.1/a", "crossref_status": "ok"},
+                          {"doi": "10.1/b", "crossref_status": "retracted"}])
+        self.assertEqual(s["records_carrying_status_data"], 2)
+        self.assertEqual(s["flagged_count"], 1)
+        self.assertEqual(s["flagged"][0]["crossref_status"], "retracted")
+
+    def test_crossref_concern_is_flagged(self):
+        s = self._screen([{"doi": "10.1/c", "crossref_status": "concern"}])
+        self.assertEqual(s["flagged_count"], 1)
+
+    def test_crossref_corrected_is_not_flagged_but_counts_as_checked(self):
+        """A correction is not a retraction; the record was still screened."""
+        s = self._screen([{"doi": "10.1/d", "crossref_status": "corrected"}])
+        self.assertEqual(s["flagged_count"], 0)
+        self.assertEqual(s["records_carrying_status_data"], 1)
+
     def test_no_status_data_reads_as_uninformative_not_clean(self):
         """Zero hits AND zero records carrying the field is the signature of a
         check that could not have worked. It must not read as a clean result."""

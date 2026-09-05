@@ -158,6 +158,12 @@ CR_SELECT = ("DOI,title,author,container-title,issued,type,volume,page,publisher
 
 def _cr_record(w: dict) -> dict:
     parts = ((w.get("issued") or {}).get("date-parts") or [[None]])[0]
+    # CR_SELECT already asks for update-to and updated-by, and Crossref returns
+    # them on search results — a retracted paper comes back carrying updated-by
+    # in the search response itself. Dropping them here meant a Crossref-only
+    # search produced records with no retraction signal at all, so the screen
+    # downstream had nothing to read and reported itself uninformative.
+    status, _notes = classify_updates(w)
     return _record(
         "crossref",
         doi=w.get("DOI"),
@@ -171,6 +177,7 @@ def _cr_record(w: dict) -> dict:
         volume=w.get("volume"),
         pages=w.get("page"),
         publisher=w.get("publisher"),
+        crossref_status=status,
     )
 
 
