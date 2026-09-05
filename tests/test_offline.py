@@ -447,37 +447,67 @@ class TestOpenAlexQuerySanitising(unittest.TestCase):
         self.assertEqual(sources._oa_query("a * ? b"), "a b")
 
 
-class TestRetractionAlerts(unittest.TestCase):
-    """OpenAlex returns is_retracted on every record and Europe PMC returns
-    MEDLINE publication types. That data was already being fetched and then
-    ignored, so a retracted paper could sit unremarked in a result set unless
-    someone ran verify_doi on all N candidates first."""
+class TestRetractionScreen(unittest.TestCase):
+    """A screen that ran and found nothing and a screen that never ran emit
+    identical output when only the absence of hits is reported, so there is
+    nothing to audit the null against. The count of what was examined travels
+    with the result, and so does the positive control."""
 
-    def _alerts(self, records):
+    def _screen(self, records):
         from app import server
-        return server._retraction_alerts(records)
+        return server._retraction_screen(records)
 
     def test_flags_openalex_is_retracted(self):
-        a = self._alerts([{"doi": "10.1/r", "title": "T", "is_retracted": True},
+        s = self._screen([{"doi": "10.1/r", "title": "T", "is_retracted": True},
                           {"doi": "10.1/ok", "title": "U", "is_retracted": False}])
-        self.assertEqual(len(a), 1)
-        self.assertEqual(a[0]["doi"], "10.1/r")
+        self.assertEqual(s["flagged_count"], 1)
+        self.assertEqual(s["flagged"][0]["doi"], "10.1/r")
 
     def test_flags_medline_retracted_publication(self):
-        a = self._alerts([{"doi": "10.1/r", "title": "T",
+        s = self._screen([{"doi": "10.1/r", "title": "T",
                            "pub_types": ["Retracted Publication", "Journal Article"]}])
-        self.assertEqual(len(a), 1)
-        self.assertEqual(a[0]["medline_publication_types"], ["Retracted Publication"])
+        self.assertEqual(s["flagged_count"], 1)
+        self.assertEqual(s["flagged"][0]["medline_publication_types"],
+                         ["Retracted Publication"])
 
     def test_unknown_status_is_not_flagged(self):
         """is_retracted=None means the index did not say, which is not a flag."""
-        self.assertEqual(self._alerts([{"doi": "10.1/x", "is_retracted": None}]), [])
-        self.assertEqual(self._alerts([{"doi": "10.1/x"}]), [])
+        self.assertEqual(self._screen([{"doi": "10.1/x", "is_retracted": None}])
+                         ["flagged_count"], 0)
 
-    def test_clean_records_produce_no_alerts(self):
-        self.assertEqual(
-            self._alerts([{"doi": "10.1/a", "is_retracted": False,
-                           "pub_types": ["Journal Article"]}]), [])
+    def test_block_is_present_even_when_nothing_flagged(self):
+        """The whole point: a clean screen must still report itself."""
+        s = self._screen([{"doi": "10.1/a", "is_retracted": False}])
+        self.assertEqual(s["records_screened"], 1)
+        self.assertEqual(s["flagged_count"], 0)
+        self.assertIn("interpretation", s)
+
+    def test_denominator_counts_records_carrying_the_field(self):
+        s = self._screen([
+            {"doi": "10.1/a", "is_retracted": False},          # has the field
+            {"doi": "10.1/b", "pub_types": ["Journal Article"]},  # has the field
+            {"doi": "10.1/c"},                                  # does not
+        ])
+        self.assertEqual(s["records_screened"], 3)
+        self.assertEqual(s["records_carrying_status_data"], 2)
+
+    def test_no_status_data_reads_as_uninformative_not_clean(self):
+        """Zero hits AND zero records carrying the field is the signature of a
+        check that could not have worked. It must not read as a clean result."""
+        s = self._screen([{"doi": "10.1/x"}, {"doi": "10.1/y"}])
+        self.assertEqual(s["records_carrying_status_data"], 0)
+        self.assertIn("UNINFORMATIVE", s["interpretation"])
+        self.assertNotIn("real negative", s["interpretation"])
+
+    def test_clean_screen_says_it_is_a_real_negative(self):
+        s = self._screen([{"doi": "10.1/a", "is_retracted": False},
+                          {"doi": "10.1/b", "is_retracted": False}])
+        self.assertIn("real negative", s["interpretation"])
+
+    def test_empty_result_set_is_not_called_uninformative(self):
+        s = self._screen([])
+        self.assertEqual(s["records_screened"], 0)
+        self.assertNotIn("UNINFORMATIVE", s.get("interpretation", ""))
 
 
 class TestRequestPacing(unittest.TestCase):

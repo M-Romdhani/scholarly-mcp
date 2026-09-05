@@ -38,8 +38,18 @@ mcp = MCPServer(
 )
 
 
-def _retraction_alerts(records: list[dict]) -> list[dict]:
-    """Surface retraction flags already present in results.
+def _retraction_screen(records: list[dict]) -> dict:
+    """Screen results for retraction flags, and report what was screened.
+
+    Returns a block that is always present, never omitted when nothing is found.
+    A screen that ran and found nothing and a screen that never ran emit
+    identical output if the only thing reported is the absence of hits, and
+    there is then nothing to audit the null against. So the count of records
+    examined travels with the result, and so does `records_carrying_status_data`
+    — the positive control. Zero hits is reassuring only when the field the
+    check depends on actually arrived on some records; zero hits together with
+    zero records carrying the field is the signature of a check that could not
+    have worked.
 
     OpenAlex returns `is_retracted` on every record and Europe PMC returns
     MEDLINE publication types, so this costs no extra call — the data was
@@ -52,10 +62,12 @@ def _retraction_alerts(records: list[dict]) -> list[dict]:
     corrections and expressions of concern with retractions and misses some
     retractions entirely, so each hit still needs verify_doi.
     """
-    alerts = []
+    alerts, with_data = [], 0
     for r in records:
         pub_types = [t for t in (r.get("pub_types") or [])
                      if "retract" in (t or "").lower()]
+        if r.get("is_retracted") is not None or r.get("pub_types"):
+            with_data += 1
         if r.get("is_retracted") is True or pub_types:
             alerts.append({
                 "doi": r.get("doi"),
@@ -63,7 +75,35 @@ def _retraction_alerts(records: list[dict]) -> list[dict]:
                 "openalex_is_retracted": r.get("is_retracted"),
                 "medline_publication_types": pub_types or None,
             })
-    return alerts
+
+    screen = {
+        "records_screened": len(records),
+        "records_carrying_status_data": with_data,
+        "flagged_count": len(alerts),
+        "flagged": alerts,
+    }
+    if records and with_data == 0:
+        screen["interpretation"] = (
+            "This screen is UNINFORMATIVE, not clean. None of the records "
+            "carried a retraction status field at all, so nothing was actually "
+            "checked — usually because the indexes that supply it (OpenAlex, "
+            "Europe PMC) were not among the sources queried or did not return. "
+            "Do not read the empty result as evidence of no retractions; run "
+            "verify_doi on anything you intend to cite.")
+    elif not alerts:
+        screen["interpretation"] = (
+            f"Screened {len(records)} records, {with_data} of which carried a "
+            f"status field; none flagged. This is a real negative, not an "
+            f"absence of checking. Screening flags are still a coarse filter — "
+            f"verify_doi remains the check before citing.")
+    else:
+        screen["interpretation"] = (
+            f"{len(alerts)} of {len(records)} records are flagged as retracted "
+            f"by an index. Run verify_doi on each before citing it — these are "
+            f"screening flags, not verdicts. If one is central to your topic, "
+            f"look for others from the same authors or lab: retractions in a "
+            f"research programme rarely occur alone.")
+    return screen
 
 
 def _fail(exc: Exception) -> str:
@@ -141,15 +181,7 @@ def search_literature(
         "verified": False,
         "candidates": merged,
     }
-    alerts = _retraction_alerts(merged)
-    if alerts:
-        result["retraction_alerts"] = alerts
-        result["retraction_warning"] = (
-            f"{len(alerts)} of these candidates are flagged as retracted by an "
-            f"index. Run verify_doi on each before citing it — these are "
-            f"screening flags, not verdicts. If one is central to your topic, "
-            f"look for others from the same authors or lab: retractions in a "
-            f"research programme rarely occur alone.")
+    result["retraction_screening"] = _retraction_screen(merged)
     if failed:
         result["coverage_warning"] = (
             f"{len(failed)} of {len(sources_to_query)} sources failed. Coverage "
@@ -434,16 +466,7 @@ def expand_citations(
             "this tool means the slices differed, NOT that the indexes disagree "
             "about whether a paper is real. Use search_literature or verify_doi "
             "to judge that.")
-    alerts = _retraction_alerts(out["results"])
-    if alerts:
-        out["retraction_alerts"] = alerts
-        out["retraction_warning"] = (
-            f"{len(alerts)} work(s) in this expansion are flagged as retracted. "
-            f"Verify each with verify_doi. Expanding around a retracted paper is "
-            f"how a compromised line of work is mapped — but note that cited_by "
-            f"is sorted by citation count, so retracted follow-ups with few "
-            f"citations may sit outside this window. Search the authors' names "
-            f"and the retraction coverage as well.")
+    out["retraction_screening"] = _retraction_screen(out["results"])
     if failed:
         out["coverage_warning"] = (
             f"{len(failed)} source(s) failed; this expansion is partial.")
